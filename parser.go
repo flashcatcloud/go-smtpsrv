@@ -15,11 +15,14 @@ import (
 	"golang.org/x/text/encoding/charmap"
 )
 
-const contentTypeMultipartMixed = "multipart/mixed"
-const contentTypeMultipartAlternative = "multipart/alternative"
-const contentTypeMultipartRelated = "multipart/related"
-const contentTypeTextHtml = "text/html"
-const contentTypeTextPlain = "text/plain"
+const (
+	contentTypeMultipartMixed       = "multipart/mixed"
+	contentTypeMultipartAlternative = "multipart/alternative"
+	contentTypeMultipartRelated     = "multipart/related"
+	contentTypeTextHtml             = "text/html"
+	contentTypeTextPlain            = "text/plain"
+	contentTypeTextEnriched         = "text/enriched"
+)
 
 // Parse an email message read from io.Reader into parsemail.Email struct
 func ParseEmail(r io.Reader) (email *Email, err error) {
@@ -46,7 +49,7 @@ func ParseEmail(r io.Reader) (email *Email, err error) {
 		email.TextBody, email.HTMLBody, email.EmbeddedFiles, err = parseMultipartAlternative(msg.Body, params["boundary"])
 	case contentTypeMultipartRelated:
 		email.TextBody, email.HTMLBody, email.EmbeddedFiles, err = parseMultipartRelated(msg.Body, params["boundary"])
-	case contentTypeTextPlain:
+	case contentTypeTextPlain, contentTypeTextEnriched:
 		newPart, err := decodeContent(msg.Body, msg.Header.Get("Content-Transfer-Encoding"), msg.Header.Get("Content-Type"))
 		if err != nil {
 			return email, err
@@ -101,8 +104,8 @@ func createEmailFromHeader(header mail.Header) (email *Email, err error) {
 		return
 	}
 
-	//decode whole header for easier access to extra fields
-	//todo: should we decode? aren't only standard fields mime encoded?
+	// decode whole header for easier access to extra fields
+	// todo: should we decode? aren't only standard fields mime encoded?
 	email.Header, err = decodeHeaderMime(header)
 	if err != nil {
 		return
@@ -137,7 +140,7 @@ func parseMultipartRelated(msg io.Reader, boundary string) (textBody, htmlBody s
 		}
 
 		switch contentType {
-		case contentTypeTextPlain:
+		case contentTypeTextPlain, contentTypeTextEnriched:
 			ppContent, err := io.ReadAll(part)
 			if err != nil {
 				return textBody, htmlBody, embeddedFiles, err
@@ -178,7 +181,6 @@ func parseMultipartRelated(msg io.Reader, boundary string) (textBody, htmlBody s
 }
 
 func decodeCharset(content io.Reader, contentTypeWithCharset string) io.Reader {
-
 	charset := "default"
 	if strings.Contains(contentTypeWithCharset, "; charset=") {
 		split := strings.Split(contentTypeWithCharset, "; charset=")
@@ -216,7 +218,7 @@ func parseMultipartAlternative(msg io.Reader, boundary string) (textBody, htmlBo
 		}
 
 		switch contentType {
-		case contentTypeTextPlain:
+		case contentTypeTextPlain, contentTypeTextEnriched:
 			newPart, err := decodeContent(part, part.Header.Get("Content-Transfer-Encoding"), part.Header.Get("Content-Type"))
 			if err != nil {
 				return textBody, htmlBody, embeddedFiles, err
@@ -294,7 +296,7 @@ func parseMultipartMixed(msg io.Reader, boundary string) (textBody, htmlBody str
 			if err != nil {
 				return textBody, htmlBody, attachments, embeddedFiles, err
 			}
-		} else if contentType == contentTypeTextPlain {
+		} else if contentType == contentTypeTextPlain || contentType == contentTypeTextEnriched {
 			newPart, err := decodeContent(part, part.Header.Get("Content-Transfer-Encoding"), part.Header.Get("Content-Type"))
 			if err != nil {
 				return textBody, htmlBody, attachments, embeddedFiles, err
@@ -407,7 +409,6 @@ func decodeAttachment(part *multipart.Part) (at Attachment, err error) {
 }
 
 func decodeContent(content io.Reader, encoding string, contentTypeWithCharset string) (io.Reader, error) {
-
 	switch encoding {
 	case "base64":
 		decoded := base64.NewDecoder(base64.StdEncoding, content)
