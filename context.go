@@ -29,11 +29,16 @@ func (c Context) User() (string, string, error) {
 }
 
 func (c Context) RemoteAddr() net.Addr {
-	return c.session.connState.RemoteAddr
+	return c.session.conn.Conn().RemoteAddr()
 }
 
 func (c Context) TLS() *tls.ConnectionState {
-	return &c.session.connState.TLS
+	cs, ok := c.session.conn.TLSConnectionState()
+	if !ok {
+		return nil
+	}
+
+	return &cs
 }
 
 func (c Context) Read(p []byte) (int, error) {
@@ -57,6 +62,7 @@ func (c Context) Mailable() (bool, error) {
 
 	return len(mxhosts) > 0, nil
 }
+
 func (c Context) SPF() (SPFResult, string, error) {
 	_, host, err := SplitAddress(c.From().Address)
 	if err != nil {

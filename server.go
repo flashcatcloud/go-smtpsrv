@@ -15,7 +15,7 @@ type ServerConfig struct {
 	WriteTimeout    time.Duration
 	Handler         HandlerFunc
 	Auther          AuthFunc
-	MaxMessageBytes int
+	MaxMessageBytes int64
 	TLSConfig       *tls.Config
 }
 
