@@ -26,10 +26,10 @@ const (
 )
 
 // Parse an email message read from io.Reader into parsemail.Email struct
-func ParseEmail(r io.Reader, maxHeaderSize ...int) (email *Email, err error) {
+func ParseEmail(r io.Reader, maxHeaderBytes ...int) (email *Email, err error) {
 	var msg *mail.Message
-	if len(maxHeaderSize) > 0 && maxHeaderSize[0] > 0 {
-		msg, err = mail.ReadMessage(bufio.NewReaderSize(r, maxHeaderSize[0]))
+	if len(maxHeaderBytes) > 0 && maxHeaderBytes[0] > 0 {
+		msg, err = mail.ReadMessage(bufio.NewReaderSize(r, maxHeaderBytes[0]))
 	} else {
 		msg, err = mail.ReadMessage(r)
 	}

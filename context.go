@@ -45,8 +45,8 @@ func (c Context) Read(p []byte) (int, error) {
 	return c.session.body.Read(p)
 }
 
-func (c Context) Parse() (*Email, error) {
-	return ParseEmail(c.session.body)
+func (c Context) Parse(maxHeaderBytes ...int) (*Email, error) {
+	return ParseEmail(c.session.body, maxHeaderBytes...)
 }
 
 func (c Context) Mailable() (bool, error) {
