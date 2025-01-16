@@ -1,6 +1,7 @@
 package smtpsrv
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"fmt"
@@ -25,8 +26,13 @@ const (
 )
 
 // Parse an email message read from io.Reader into parsemail.Email struct
-func ParseEmail(r io.Reader) (email *Email, err error) {
-	msg, err := mail.ReadMessage(r)
+func ParseEmail(r io.Reader, maxHeaderSize ...int) (email *Email, err error) {
+	var msg *mail.Message
+	if len(maxHeaderSize) > 0 && maxHeaderSize[0] > 0 {
+		msg, err = mail.ReadMessage(bufio.NewReaderSize(r, maxHeaderSize[0]))
+	} else {
+		msg, err = mail.ReadMessage(r)
+	}
 	if err != nil {
 		return
 	}
