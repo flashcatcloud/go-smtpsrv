@@ -10,11 +10,14 @@ import (
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
+	"regexp"
 	"strings"
 	"time"
 
 	"golang.org/x/text/encoding/charmap"
 )
+
+var invalidQPTrailingEquals = regexp.MustCompile(`=([^0-9A-Fa-f\r\n]|[0-9A-Fa-f]$|$)`)
 
 const (
 	contentTypeMultipartMixed       = "multipart/mixed"
@@ -444,12 +447,20 @@ func decodeContent(content io.Reader, encoding string, contentTypeWithCharset st
 		return decodeCharset(bytes.NewReader(dd), contentTypeWithCharset), nil
 
 	case "quoted-printable":
-		decoded := quotedprintable.NewReader(content)
-		b, err := io.ReadAll(decoded)
+		raw, err := io.ReadAll(content)
 		if err != nil {
 			return nil, err
 		}
-
+		decoded := quotedprintable.NewReader(bytes.NewReader(raw))
+		b, err := io.ReadAll(decoded)
+		if err != nil {
+			sanitized := sanitizeQuotedPrintable(raw)
+			decoded = quotedprintable.NewReader(bytes.NewReader(sanitized))
+			b, err = io.ReadAll(decoded)
+			if err != nil {
+				b = raw
+			}
+		}
 		return decodeCharset(bytes.NewReader(b), contentTypeWithCharset), nil
 
 	default:
@@ -578,4 +589,13 @@ type Email struct {
 
 	Attachments   []Attachment
 	EmbeddedFiles []EmbeddedFile
+}
+
+func sanitizeQuotedPrintable(data []byte) []byte {
+	return invalidQPTrailingEquals.ReplaceAllFunc(data, func(match []byte) []byte {
+		if len(match) == 1 {
+			return []byte("=3D")
+		}
+		return append([]byte("=3D"), match[1:]...)
+	})
 }
