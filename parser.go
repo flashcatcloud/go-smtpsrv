@@ -150,14 +150,24 @@ func parseMultipartRelated(msg io.Reader, boundary string) (textBody, htmlBody s
 
 		switch contentType {
 		case contentTypeTextPlain, contentTypeTextEnriched:
-			ppContent, err := io.ReadAll(part)
+			newPart, err := decodeContent(part, part.Header.Get("Content-Transfer-Encoding"), part.Header.Get("Content-Type"))
+			if err != nil {
+				return textBody, htmlBody, embeddedFiles, err
+			}
+
+			ppContent, err := io.ReadAll(newPart)
 			if err != nil {
 				return textBody, htmlBody, embeddedFiles, err
 			}
 
 			textBody += strings.TrimSuffix(string(ppContent[:]), "\n")
 		case contentTypeTextHtml:
-			ppContent, err := io.ReadAll(part)
+			newPart, err := decodeContent(part, part.Header.Get("Content-Transfer-Encoding"), part.Header.Get("Content-Type"))
+			if err != nil {
+				return textBody, htmlBody, embeddedFiles, err
+			}
+
+			ppContent, err := io.ReadAll(newPart)
 			if err != nil {
 				return textBody, htmlBody, embeddedFiles, err
 			}
@@ -430,10 +440,20 @@ func decodeAttachment(part *multipart.Part) (at Attachment, err error) {
 func decodeContent(content io.Reader, encoding string, contentTypeWithCharset string) (io.Reader, error) {
 	switch encoding {
 	case "base64":
-		decoded := base64.NewDecoder(base64.StdEncoding, content)
-		b, err := io.ReadAll(decoded)
+		raw, err := io.ReadAll(content)
 		if err != nil {
 			return nil, err
+		}
+
+		b, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(raw)))
+		if err != nil {
+			// Lenient retry: strip all non-base64 characters (spaces, tabs, etc.)
+			// Many mailers produce non-RFC-compliant base64 with stray whitespace.
+			cleaned := sanitizeBase64(raw)
+			b, err = io.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(cleaned)))
+			if err != nil {
+				b = raw
+			}
 		}
 
 		return decodeCharset(bytes.NewReader(b), contentTypeWithCharset), nil
@@ -589,6 +609,17 @@ type Email struct {
 
 	Attachments   []Attachment
 	EmbeddedFiles []EmbeddedFile
+}
+
+func sanitizeBase64(data []byte) []byte {
+	buf := make([]byte, 0, len(data))
+	for _, b := range data {
+		if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
+			(b >= '0' && b <= '9') || b == '+' || b == '/' || b == '=' {
+			buf = append(buf, b)
+		}
+	}
+	return buf
 }
 
 func sanitizeQuotedPrintable(data []byte) []byte {
