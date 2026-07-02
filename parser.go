@@ -17,7 +17,10 @@ import (
 	"golang.org/x/text/encoding/charmap"
 )
 
-var invalidQPTrailingEquals = regexp.MustCompile(`=([^0-9A-Fa-f\r\n]|[0-9A-Fa-f]$|$)`)
+var (
+	invalidQPTrailingEquals       = regexp.MustCompile(`=([^0-9A-Fa-f\r\n]|[0-9A-Fa-f]$|$)`)
+	invalidQPTerminalSoftLineFeed = regexp.MustCompile(`=\r?\n?$`)
+)
 
 const (
 	contentTypeMultipartMixed       = "multipart/mixed"
@@ -31,11 +34,7 @@ const (
 // Parse an email message read from io.Reader into parsemail.Email struct
 func ParseEmail(r io.Reader, maxHeaderBytes ...int) (email *Email, err error) {
 	var msg *mail.Message
-	if len(maxHeaderBytes) > 0 && maxHeaderBytes[0] > 0 {
-		msg, err = mail.ReadMessage(bufio.NewReaderSize(r, maxHeaderBytes[0]))
-	} else {
-		msg, err = mail.ReadMessage(r)
-	}
+	msg, err = readMailMessage(r, maxHeaderBytes...)
 	if err != nil {
 		return
 	}
@@ -83,6 +82,113 @@ func ParseEmail(r io.Reader, maxHeaderBytes ...int) (email *Email, err error) {
 	}
 
 	return
+}
+
+func readMailMessage(r io.Reader, maxHeaderBytes ...int) (*mail.Message, error) {
+	readerSize := 4096
+	headerLimit := 0
+	if len(maxHeaderBytes) > 0 && maxHeaderBytes[0] > 0 {
+		readerSize = maxHeaderBytes[0]
+		headerLimit = maxHeaderBytes[0]
+	}
+
+	headerReader := r
+	if headerLimit > 0 {
+		limitedHeaderReader := &io.LimitedReader{R: r, N: int64(headerLimit) + 1}
+		headerReader = limitedHeaderReader
+	}
+
+	br := bufio.NewReaderSize(headerReader, readerSize)
+	bodyReader := io.Reader(br)
+	if headerLimit > 0 {
+		bodyReader = io.MultiReader(br, r)
+	}
+
+	header, sep, err := readRawMessageHeader(br, headerLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	header, _ = sanitizeMalformedHeaderLines(header)
+	rawMessage := io.MultiReader(bytes.NewReader(header), bytes.NewReader(sep), bodyReader)
+	return mail.ReadMessage(rawMessage)
+}
+
+func readRawMessageHeader(r *bufio.Reader, maxHeaderBytes int) (header, sep []byte, err error) {
+	for {
+		line, readErr := r.ReadSlice('\n')
+		if len(line) > 0 {
+			if readErr != bufio.ErrBufferFull && isMessageHeaderSeparator(line) {
+				return header, line, nil
+			}
+
+			header = append(header, line...)
+			if maxHeaderBytes > 0 && len(header) > maxHeaderBytes {
+				return nil, nil, fmt.Errorf("message header exceeds %d bytes", maxHeaderBytes)
+			}
+		}
+
+		if readErr != nil {
+			if readErr == bufio.ErrBufferFull {
+				continue
+			}
+			if readErr == io.EOF {
+				return header, []byte("\r\n\r\n"), nil
+			}
+			return nil, nil, readErr
+		}
+	}
+}
+
+func isMessageHeaderSeparator(line []byte) bool {
+	return bytes.Equal(line, []byte("\n")) || bytes.Equal(line, []byte("\r\n"))
+}
+
+func sanitizeMalformedHeaderLines(header []byte) ([]byte, bool) {
+	eol := "\r\n"
+	if !bytes.Contains(header, []byte("\r\n")) && bytes.Contains(header, []byte("\n")) {
+		eol = "\n"
+	}
+
+	normalized := strings.ReplaceAll(string(header), "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	sanitizedLines := make([]string, 0, len(lines))
+	changed := false
+	droppingMalformedHeader := false
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			if len(sanitizedLines) == 0 || droppingMalformedHeader {
+				changed = true
+				continue
+			}
+			sanitizedLines = append(sanitizedLines, line)
+			continue
+		}
+
+		if !strings.Contains(line, ":") {
+			changed = true
+			droppingMalformedHeader = true
+			continue
+		}
+
+		droppingMalformedHeader = false
+		sanitizedLines = append(sanitizedLines, line)
+	}
+
+	if !changed {
+		return header, false
+	}
+
+	sanitized := []byte(strings.Join(sanitizedLines, eol))
+	if len(sanitized) > 0 {
+		sanitized = append(sanitized, []byte(eol)...)
+	}
+	return sanitized, true
 }
 
 func createEmailFromHeader(header mail.Header) (email *Email, err error) {
@@ -135,7 +241,7 @@ func parseContentType(contentTypeHeader string) (contentType string, params map[
 func parseMultipartRelated(msg io.Reader, boundary string) (textBody, htmlBody string, embeddedFiles []EmbeddedFile, err error) {
 	pmr := multipart.NewReader(msg, boundary)
 	for {
-		part, err := pmr.NextPart()
+		part, err := pmr.NextRawPart()
 
 		if err == io.EOF {
 			break
@@ -223,7 +329,7 @@ func decodeCharset(content io.Reader, contentTypeWithCharset string) io.Reader {
 func parseMultipartAlternative(msg io.Reader, boundary string) (textBody, htmlBody string, embeddedFiles []EmbeddedFile, err error) {
 	pmr := multipart.NewReader(msg, boundary)
 	for {
-		part, err := pmr.NextPart()
+		part, err := pmr.NextRawPart()
 
 		if err == io.EOF {
 			break
@@ -293,7 +399,7 @@ func parseMultipartAlternative(msg io.Reader, boundary string) (textBody, htmlBo
 func parseMultipartMixed(msg io.Reader, boundary string) (textBody, htmlBody string, attachments []Attachment, embeddedFiles []EmbeddedFile, err error) {
 	mr := multipart.NewReader(msg, boundary)
 	for {
-		part, err := mr.NextPart()
+		part, err := mr.NextRawPart()
 		if err == io.EOF {
 			break
 		} else if err != nil {
@@ -438,6 +544,7 @@ func decodeAttachment(part *multipart.Part) (at Attachment, err error) {
 }
 
 func decodeContent(content io.Reader, encoding string, contentTypeWithCharset string) (io.Reader, error) {
+	encoding = strings.ToLower(strings.TrimSpace(encoding))
 	switch encoding {
 	case "base64":
 		raw, err := io.ReadAll(content)
@@ -471,15 +578,11 @@ func decodeContent(content io.Reader, encoding string, contentTypeWithCharset st
 		if err != nil {
 			return nil, err
 		}
-		decoded := quotedprintable.NewReader(bytes.NewReader(raw))
+		sanitized := sanitizeQuotedPrintable(raw)
+		decoded := quotedprintable.NewReader(bytes.NewReader(sanitized))
 		b, err := io.ReadAll(decoded)
 		if err != nil {
-			sanitized := sanitizeQuotedPrintable(raw)
-			decoded = quotedprintable.NewReader(bytes.NewReader(sanitized))
-			b, err = io.ReadAll(decoded)
-			if err != nil {
-				b = raw
-			}
+			b = raw
 		}
 		return decodeCharset(bytes.NewReader(b), contentTypeWithCharset), nil
 
@@ -623,6 +726,7 @@ func sanitizeBase64(data []byte) []byte {
 }
 
 func sanitizeQuotedPrintable(data []byte) []byte {
+	data = invalidQPTerminalSoftLineFeed.ReplaceAll(data, []byte("=3D"))
 	return invalidQPTrailingEquals.ReplaceAllFunc(data, func(match []byte) []byte {
 		if len(match) == 1 {
 			return []byte("=3D")
