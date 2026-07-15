@@ -148,8 +148,8 @@ func TestParseEmailRejectsOversizedHeader(t *testing.T) {
 	if err == nil {
 		t.Fatal("ParseEmail() error is nil")
 	}
-	if !strings.Contains(err.Error(), "message header exceeds") {
-		t.Fatalf("ParseEmail() error = %v", err)
+	if got, want := err.Error(), "message header exceeds the 64-byte limit"; got != want {
+		t.Fatalf("ParseEmail() error = %q, want %q", got, want)
 	}
 }
 
@@ -162,11 +162,42 @@ func TestParseEmailRejectsOversizedHeaderBeforeReadingWholeLine(t *testing.T) {
 	if err == nil {
 		t.Fatal("ParseEmail() error is nil")
 	}
-	if !strings.Contains(err.Error(), "message header exceeds") {
+	if got, want := err.Error(), "message header exceeds the 64-byte limit"; got != want {
+		t.Fatalf("ParseEmail() error = %q, want %q", got, want)
+	}
+	if reader.count > 66 {
+		t.Fatalf("ParseEmail read %d bytes before rejecting oversized header; want at most 66", reader.count)
+	}
+}
+
+func TestParseEmailAcceptsHeaderAtConfiguredLimit(t *testing.T) {
+	raw := "From: sender@example.com\r\n\r\nbody"
+	msg, err := ParseEmail(bytes.NewReader([]byte(raw)), len("From: sender@example.com\r\n"))
+	if err != nil {
 		t.Fatalf("ParseEmail() error = %v", err)
 	}
-	if reader.count > 65 {
-		t.Fatalf("ParseEmail read %d bytes before rejecting oversized header; want at most 65", reader.count)
+	if msg.TextBody != "body" {
+		t.Fatalf("TextBody = %q, want %q", msg.TextBody, "body")
+	}
+}
+
+func TestParseEmailRejectsMessageWithoutHeaderBodySeparator(t *testing.T) {
+	_, err := ParseEmail(bytes.NewReader([]byte("Subject: Test\r\nbody")), 65536)
+	if err == nil || err.Error() != "message is missing the blank line between the header and body" {
+		t.Fatalf("ParseEmail() error = %v", err)
+	}
+}
+
+func TestSanitizeMalformedHeaderLinesAvoidsAllocationsForValidHeader(t *testing.T) {
+	header := []byte("From: sender@example.com\r\nSubject: Test\r\n")
+	allocs := testing.AllocsPerRun(1000, func() {
+		got := sanitizeMalformedHeaderLines(header)
+		if !bytes.Equal(got, header) {
+			t.Fatal("valid header was changed")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("sanitizeMalformedHeaderLines() allocated %v times", allocs)
 	}
 }
 

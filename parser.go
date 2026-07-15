@@ -94,7 +94,7 @@ func readMailMessage(r io.Reader, maxHeaderBytes ...int) (*mail.Message, error) 
 
 	headerReader := r
 	if headerLimit > 0 {
-		limitedHeaderReader := &io.LimitedReader{R: r, N: int64(headerLimit) + 1}
+		limitedHeaderReader := &io.LimitedReader{R: r, N: int64(headerLimit) + 2}
 		headerReader = limitedHeaderReader
 	}
 
@@ -109,7 +109,7 @@ func readMailMessage(r io.Reader, maxHeaderBytes ...int) (*mail.Message, error) 
 		return nil, err
 	}
 
-	header, _ = sanitizeMalformedHeaderLines(header)
+	header = sanitizeMalformedHeaderLines(header)
 	rawMessage := io.MultiReader(bytes.NewReader(header), bytes.NewReader(sep), bodyReader)
 	return mail.ReadMessage(rawMessage)
 }
@@ -124,7 +124,7 @@ func readRawMessageHeader(r *bufio.Reader, maxHeaderBytes int) (header, sep []by
 
 			header = append(header, line...)
 			if maxHeaderBytes > 0 && len(header) > maxHeaderBytes {
-				return nil, nil, fmt.Errorf("message header exceeds %d bytes", maxHeaderBytes)
+				return nil, nil, fmt.Errorf("message header exceeds the %d-byte limit", maxHeaderBytes)
 			}
 		}
 
@@ -133,7 +133,7 @@ func readRawMessageHeader(r *bufio.Reader, maxHeaderBytes int) (header, sep []by
 				continue
 			}
 			if readErr == io.EOF {
-				return header, []byte("\r\n\r\n"), nil
+				return nil, nil, fmt.Errorf("message is missing the blank line between the header and body")
 			}
 			return nil, nil, readErr
 		}
@@ -144,51 +144,42 @@ func isMessageHeaderSeparator(line []byte) bool {
 	return bytes.Equal(line, []byte("\n")) || bytes.Equal(line, []byte("\r\n"))
 }
 
-func sanitizeMalformedHeaderLines(header []byte) ([]byte, bool) {
-	eol := "\r\n"
-	if !bytes.Contains(header, []byte("\r\n")) && bytes.Contains(header, []byte("\n")) {
-		eol = "\n"
-	}
+func sanitizeMalformedHeaderLines(header []byte) []byte {
+	var sanitized []byte
+	previousLineValid := false
 
-	normalized := strings.ReplaceAll(string(header), "\r\n", "\n")
-	lines := strings.Split(normalized, "\n")
-	sanitizedLines := make([]string, 0, len(lines))
-	changed := false
-	droppingMalformedHeader := false
-
-	for _, line := range lines {
-		if line == "" {
-			continue
+	for start := 0; start < len(header); {
+		end := bytes.IndexByte(header[start:], '\n')
+		if end < 0 {
+			end = len(header)
+		} else {
+			end += start + 1
 		}
 
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			if len(sanitizedLines) == 0 || droppingMalformedHeader {
-				changed = true
-				continue
+		line := header[start:end]
+		isContinuation := len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
+		valid := isContinuation && previousLineValid
+		if !isContinuation {
+			valid = bytes.IndexByte(line, ':') >= 0
+		}
+
+		if !valid {
+			if sanitized == nil {
+				sanitized = make([]byte, 0, len(header))
+				sanitized = append(sanitized, header[:start]...)
 			}
-			sanitizedLines = append(sanitizedLines, line)
-			continue
+		} else if sanitized != nil {
+			sanitized = append(sanitized, line...)
 		}
 
-		if !strings.Contains(line, ":") {
-			changed = true
-			droppingMalformedHeader = true
-			continue
-		}
-
-		droppingMalformedHeader = false
-		sanitizedLines = append(sanitizedLines, line)
+		previousLineValid = valid
+		start = end
 	}
 
-	if !changed {
-		return header, false
+	if sanitized == nil {
+		return header
 	}
-
-	sanitized := []byte(strings.Join(sanitizedLines, eol))
-	if len(sanitized) > 0 {
-		sanitized = append(sanitized, []byte(eol)...)
-	}
-	return sanitized, true
+	return sanitized
 }
 
 func createEmailFromHeader(header mail.Header) (email *Email, err error) {
