@@ -133,7 +133,7 @@ func readRawMessageHeader(r *bufio.Reader, maxHeaderBytes int) (header, sep []by
 				continue
 			}
 			if readErr == io.EOF {
-				return nil, nil, fmt.Errorf("message is missing the header/body separator")
+				return nil, nil, fmt.Errorf("message is missing the blank line between the header and body")
 			}
 			return nil, nil, readErr
 		}

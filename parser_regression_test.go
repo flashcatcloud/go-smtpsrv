@@ -183,7 +183,7 @@ func TestParseEmailAcceptsHeaderAtConfiguredLimit(t *testing.T) {
 
 func TestParseEmailRejectsMessageWithoutHeaderBodySeparator(t *testing.T) {
 	_, err := ParseEmail(bytes.NewReader([]byte("Subject: Test\r\nbody")), 65536)
-	if err == nil || err.Error() != "message is missing the header/body separator" {
+	if err == nil || err.Error() != "message is missing the blank line between the header and body" {
 		t.Fatalf("ParseEmail() error = %v", err)
 	}
 }
