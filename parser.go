@@ -280,7 +280,7 @@ func parseMultipartRelated(msg io.Reader, boundary string) (textBody, htmlBody s
 			textBody += tb
 			embeddedFiles = append(embeddedFiles, ef...)
 		default:
-			if isEmbeddedFile(part) {
+			if isEmbeddedFile(contentType, part) {
 				ef, err := decodeEmbeddedFile(part)
 				if err != nil {
 					return textBody, htmlBody, embeddedFiles, err
@@ -371,7 +371,7 @@ func parseMultipartAlternative(msg io.Reader, boundary string) (textBody, htmlBo
 			embeddedFiles = append(embeddedFiles, ef...)
 
 		default:
-			if isEmbeddedFile(part) {
+			if isEmbeddedFile(contentType, part) {
 				ef, err := decodeEmbeddedFile(part)
 				if err != nil {
 					return textBody, htmlBody, embeddedFiles, err
@@ -413,15 +413,23 @@ func parseMultipartMixed(msg io.Reader, boundary string) (textBody, htmlBody str
 			attachments = append(attachments, nestedAttachments...)
 			embeddedFiles = append(embeddedFiles, nestedEmbedded...)
 		} else if contentType == contentTypeMultipartAlternative {
-			textBody, htmlBody, embeddedFiles, err = parseMultipartAlternative(part, params["boundary"])
+			tb, hb, ef, err := parseMultipartAlternative(part, params["boundary"])
 			if err != nil {
 				return textBody, htmlBody, attachments, embeddedFiles, err
 			}
+
+			textBody += tb
+			htmlBody += hb
+			embeddedFiles = append(embeddedFiles, ef...)
 		} else if contentType == contentTypeMultipartRelated {
-			textBody, htmlBody, embeddedFiles, err = parseMultipartRelated(part, params["boundary"])
+			tb, hb, ef, err := parseMultipartRelated(part, params["boundary"])
 			if err != nil {
 				return textBody, htmlBody, attachments, embeddedFiles, err
 			}
+
+			textBody += tb
+			htmlBody += hb
+			embeddedFiles = append(embeddedFiles, ef...)
 		} else if contentType == contentTypeTextPlain || contentType == contentTypeTextEnriched {
 			newPart, err := decodeContent(part, part.Header.Get("Content-Transfer-Encoding"), part.Header.Get("Content-Type"))
 			if err != nil {
@@ -453,6 +461,13 @@ func parseMultipartMixed(msg io.Reader, boundary string) (textBody, htmlBody str
 			}
 
 			attachments = append(attachments, at)
+		} else if isEmbeddedFile(contentType, part) {
+			ef, err := decodeEmbeddedFile(part)
+			if err != nil {
+				return textBody, htmlBody, attachments, embeddedFiles, err
+			}
+
+			embeddedFiles = append(embeddedFiles, ef)
 		} else {
 			return textBody, htmlBody, attachments, embeddedFiles, fmt.Errorf("unknown multipart/mixed nested mime type: %s", contentType)
 		}
@@ -498,13 +513,31 @@ func decodeHeaderMime(header mail.Header) (mail.Header, error) {
 	return mail.Header(parsedHeader), nil
 }
 
-func isEmbeddedFile(part *multipart.Part) bool {
-	return part.Header.Get("Content-Transfer-Encoding") != ""
+func isEmbeddedFile(contentType string, part *multipart.Part) bool {
+	if strings.HasPrefix(contentType, "multipart/") {
+		return false
+	}
+	return part.Header.Get("Content-Transfer-Encoding") != "" || part.Header.Get("Content-Id") != ""
+}
+
+func decodePartContent(part *multipart.Part) (io.Reader, error) {
+	decoded, err := decodeContent(part, part.Header.Get("Content-Transfer-Encoding"), part.Header.Get("Content-Type"))
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := decoded.(*bytes.Reader); ok {
+		return decoded, nil
+	}
+	b, err := io.ReadAll(decoded)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(b), nil
 }
 
 func decodeEmbeddedFile(part *multipart.Part) (ef EmbeddedFile, err error) {
 	cid := decodeMimeSentence(part.Header.Get("Content-Id"))
-	decoded, err := decodeContent(part, part.Header.Get("Content-Transfer-Encoding"), part.Header.Get("Content-Type"))
+	decoded, err := decodePartContent(part)
 	if err != nil {
 		return
 	}
@@ -522,7 +555,7 @@ func isAttachment(part *multipart.Part) bool {
 
 func decodeAttachment(part *multipart.Part) (at Attachment, err error) {
 	filename := decodeMimeSentence(part.FileName())
-	decoded, err := decodeContent(part, part.Header.Get("Content-Transfer-Encoding"), part.Header.Get("Content-Type"))
+	decoded, err := decodePartContent(part)
 	if err != nil {
 		return
 	}
