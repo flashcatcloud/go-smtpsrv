@@ -280,7 +280,7 @@ func parseMultipartRelated(msg io.Reader, boundary string) (textBody, htmlBody s
 			textBody += tb
 			embeddedFiles = append(embeddedFiles, ef...)
 		default:
-			if isEmbeddedFile(part) {
+			if isEmbeddedFile(contentType, part) {
 				ef, err := decodeEmbeddedFile(part)
 				if err != nil {
 					return textBody, htmlBody, embeddedFiles, err
@@ -371,7 +371,7 @@ func parseMultipartAlternative(msg io.Reader, boundary string) (textBody, htmlBo
 			embeddedFiles = append(embeddedFiles, ef...)
 
 		default:
-			if isEmbeddedFile(part) {
+			if isEmbeddedFile(contentType, part) {
 				ef, err := decodeEmbeddedFile(part)
 				if err != nil {
 					return textBody, htmlBody, embeddedFiles, err
@@ -461,7 +461,7 @@ func parseMultipartMixed(msg io.Reader, boundary string) (textBody, htmlBody str
 			}
 
 			attachments = append(attachments, at)
-		} else if !strings.HasPrefix(contentType, "multipart/") && isEmbeddedFile(part) {
+		} else if isEmbeddedFile(contentType, part) {
 			ef, err := decodeEmbeddedFile(part)
 			if err != nil {
 				return textBody, htmlBody, attachments, embeddedFiles, err
@@ -513,7 +513,10 @@ func decodeHeaderMime(header mail.Header) (mail.Header, error) {
 	return mail.Header(parsedHeader), nil
 }
 
-func isEmbeddedFile(part *multipart.Part) bool {
+func isEmbeddedFile(contentType string, part *multipart.Part) bool {
+	if strings.HasPrefix(contentType, "multipart/") {
+		return false
+	}
 	return part.Header.Get("Content-Transfer-Encoding") != "" || part.Header.Get("Content-Id") != ""
 }
 

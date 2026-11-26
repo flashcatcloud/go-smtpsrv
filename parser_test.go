@@ -433,3 +433,120 @@ func TestParseEmailMultipartMixedEmbeddedWithoutTransferEncoding(t *testing.T) {
 		t.Errorf("EmbeddedFile Data = %q, want %q", string(gotData), "<svg></svg>")
 	}
 }
+
+func TestParseEmailRelatedAndAlternativeRejectUnknownMultipart(t *testing.T) {
+	tests := []struct {
+		name      string
+		outerType string
+		innerHdr  string
+		wantErr   string
+	}{
+		{
+			name:      "related rejects nested multipart with Content-ID",
+			outerType: "multipart/related",
+			innerHdr:  "Content-ID: <nested>\r\n",
+			wantErr:   "can't process multipart/related inner mime type: multipart/signed",
+		},
+		{
+			name:      "related rejects nested multipart with CTE",
+			outerType: "multipart/related",
+			innerHdr:  "Content-Transfer-Encoding: 7bit\r\n",
+			wantErr:   "can't process multipart/related inner mime type: multipart/signed",
+		},
+		{
+			name:      "alternative rejects nested multipart with Content-ID",
+			outerType: "multipart/alternative",
+			innerHdr:  "Content-ID: <nested>\r\n",
+			wantErr:   "can't process multipart/alternative inner mime type: multipart/signed",
+		},
+		{
+			name:      "alternative rejects nested multipart with CTE",
+			outerType: "multipart/alternative",
+			innerHdr:  "Content-Transfer-Encoding: 7bit\r\n",
+			wantErr:   "can't process multipart/alternative inner mime type: multipart/signed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eml := "From: sender@example.com\r\n" +
+				"To: recipient@example.com\r\n" +
+				"Subject: Nested Multipart\r\n" +
+				"MIME-Version: 1.0\r\n" +
+				"Content-Type: " + tt.outerType + "; boundary=\"outer\"\r\n" +
+				"\r\n" +
+				"--outer\r\n" +
+				"Content-Type: multipart/signed; boundary=\"sig\"\r\n" +
+				tt.innerHdr +
+				"\r\n" +
+				"--sig\r\n" +
+				"Content-Type: text/plain\r\n" +
+				"\r\n" +
+				"body\r\n" +
+				"--sig--\r\n" +
+				"--outer--\r\n"
+
+			_, err := ParseEmail(bytes.NewReader([]byte(eml)))
+			if err == nil {
+				t.Fatalf("ParseEmail() expected error %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("ParseEmail() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseEmailMultipartMixedBuffersAttachmentAndCharsetTransform(t *testing.T) {
+	// Latin-1 encoded "café" (0xe9) in an ISO-8859-1 CSV attachment with omitted CTE,
+	// plus a binary attachment, both followed by a text part.
+	latin1CSV := []byte{'c', 'a', 'f', 0xe9}
+	binData := []byte{0x00, 0x01, 0x02, 0xFF}
+
+	var buf bytes.Buffer
+	buf.WriteString("From: sender@example.com\r\n")
+	buf.WriteString("To: recipient@example.com\r\n")
+	buf.WriteString("Subject: Attachments\r\n")
+	buf.WriteString("MIME-Version: 1.0\r\n")
+	buf.WriteString("Content-Type: multipart/mixed; boundary=\"mix\"\r\n\r\n")
+	buf.WriteString("--mix\r\n")
+	buf.WriteString("Content-Type: text/csv; charset=ISO-8859-1\r\n")
+	buf.WriteString("Content-Disposition: attachment; filename=\"data.csv\"\r\n\r\n")
+	buf.Write(latin1CSV)
+	buf.WriteString("\r\n--mix\r\n")
+	buf.WriteString("Content-Type: application/octet-stream\r\n")
+	buf.WriteString("Content-Disposition: attachment; filename=\"blob.bin\"\r\n")
+	buf.WriteString("Content-Transfer-Encoding: binary\r\n\r\n")
+	buf.Write(binData)
+	buf.WriteString("\r\n--mix\r\n")
+	buf.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n")
+	buf.WriteString("tail body\r\n")
+	buf.WriteString("--mix--\r\n")
+
+	email, err := ParseEmail(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("ParseEmail() error = %v", err)
+	}
+	if email.TextBody != "tail body" {
+		t.Errorf("TextBody = %q, want %q", email.TextBody, "tail body")
+	}
+	if len(email.Attachments) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(email.Attachments))
+	}
+
+	gotCSV, err := io.ReadAll(email.Attachments[0].Data)
+	if err != nil {
+		t.Fatalf("ReadAll(Attachments[0].Data) error = %v", err)
+	}
+	if string(gotCSV) != "café" {
+		t.Errorf("Attachments[0].Data = %q, want %q", string(gotCSV), "café")
+	}
+
+	gotBin, err := io.ReadAll(email.Attachments[1].Data)
+	if err != nil {
+		t.Fatalf("ReadAll(Attachments[1].Data) error = %v", err)
+	}
+	if !bytes.Equal(gotBin, binData) {
+		t.Errorf("Attachments[1].Data = %x, want %x", gotBin, binData)
+	}
+}
